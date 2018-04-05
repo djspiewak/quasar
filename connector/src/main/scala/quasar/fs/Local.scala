@@ -429,6 +429,7 @@ class Local private (baseDir: JFile) {
   private def delete(path: APath): Task[LocalFSError[FSError[Unit]]] =
     Task delay {
       val jpath: JPath = toJPath(path)
+      println(s"delete called with $jpath")
 
       failIfSourceMissing(path) match {
         case Some(err) => err.left.right
@@ -436,11 +437,13 @@ class Local private (baseDir: JFile) {
           case -\/(_) => // directory
             val visitor = new SimpleFileVisitor[JPath] {
               override def visitFile(file: JPath, attrs: BasicFileAttributes): FileVisitResult = {
+                println(s"visiting file: $file")
                 Files.delete(file)
                 FileVisitResult.CONTINUE
               }
 
               override def postVisitDirectory(dir: JPath, exc: IOException): FileVisitResult = {
+                println(s"visiting post dir: $dir")
                 Files.delete(dir)
                 FileVisitResult.CONTINUE
               }
