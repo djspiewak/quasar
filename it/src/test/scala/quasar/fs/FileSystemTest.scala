@@ -308,10 +308,18 @@ object FileSystemTest {
   def localUT: Task[FileSystemUT[BackendEffect]] = {
     val ref = BackendRef(BackendName("local"), ISet singleton BackendCapability.write())
 
-    val mntDir: ADir = rootDir </> dir("tmp") </> dir("local")
+    val local: java.io.File = java.nio.file.Files.createTempDirectory("localfs").toFile
 
-    Local(new java.io.File("/tmp/local/")).runFs
+    val testDir: ADir =
+      if (java.lang.System.getProperty("os.name").contains("Windows"))
+        windowsCodec.parseAbsDir(local.getAbsolutePath + "\\").map(unsafeSandboxAbs)
+          .getOrElse(scala.sys.error("Failed to generate a temp path on windows."))
+      else
+        posixCodec.parseAbsDir(local.getAbsolutePath + "/").map(unsafeSandboxAbs)
+          .getOrElse(scala.sys.error("Failed to generate a temp path on a non-windows fs (assumed posix compliance)."))
+
+    Local(local).runFs
       .map(f => Empty.analyze[Task] :+: f)
-      .map(f => FileSystemUT(ref, f, f, mntDir, ().point[Task]))
+      .map(f => FileSystemUT(ref, f, f, testDir, ().point[Task]))
   }
 }
