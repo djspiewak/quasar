@@ -23,6 +23,7 @@ import quasar.contrib.scalaz.foldable._
 import quasar.fs.FileSystemTest.allFsUT
 
 import pathy.Path._
+import pathy.scalacheck.AlphaCharacters
 import pathy.scalacheck.PathyArbitrary._
 import scalaz._, Scalaz._
 import scalaz.concurrent.Task
@@ -359,7 +360,7 @@ class ManageFilesSpec extends FileSystemTest[BackendEffect](
         runT(run)(manage.tempFile(hintDir, None))
           .map(_ relativeTo hintDir)
           .runEither must beRight(beSome[RFile])
-      }
+      }.setGen(arbPath[Rel, Dir, Sandboxed, AlphaCharacters].arbitrary)
 
       "temp file should be generated in parent of hint file" >> prop { rfile: RFile =>
         val hintFile = managePrefix </> rfile
@@ -368,7 +369,7 @@ class ManageFilesSpec extends FileSystemTest[BackendEffect](
         runT(run)(manage.tempFile(hintFile, None))
           .map(_ relativeTo hintDir)
           .runEither must beRight(beSome[RFile])
-      }
+      }.setGen(arbPath[Rel, File, Sandboxed, AlphaCharacters].arbitrary)
 
       step(doDelete(fs.setupInterpM, managePrefix).runVoid)
     }
