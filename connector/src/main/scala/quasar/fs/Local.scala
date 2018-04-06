@@ -30,14 +30,11 @@ import java.io.{File => JFile}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{
   Files,
-  FileVisitResult,
   Path => JPath,
   Paths,
-  SimpleFileVisitor,
   StandardCopyOption,
   StandardOpenOption
 }
-import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.stream.Collectors
@@ -435,32 +432,34 @@ class Local private (baseDir: JFile) {
         case Some(err) => err.left.right
         case None => refineType(path) match {
           case -\/(_) => // directory
-            val visitor = new SimpleFileVisitor[JPath] {
-              override def visitFile(file: JPath, attrs: BasicFileAttributes): FileVisitResult = {
-                println(s"visitFile: $file")
-                Files.delete(file)
-                FileVisitResult.CONTINUE
-              }
-
-              override def postVisitDirectory(dir: JPath, exc: IOException): FileVisitResult = {
-                println(s"postVisitDirectory: $dir")
-                Files.delete(dir)
-                FileVisitResult.CONTINUE
-              }
-
-              override def preVisitDirectory(dir: JPath, attrs: BasicFileAttributes): FileVisitResult = {
-                val contents = Files.list(dir).collect(Collectors.toList())
-                println(s"preVisitDirectory: $dir with contents $contents")
-                FileVisitResult.CONTINUE
-              }
-
-              override def visitFileFailed(file: JPath, exc: IOException): FileVisitResult = {
-                println(s"visitFileFailed: $file")
-                FileVisitResult.CONTINUE
+            @SuppressWarnings(Array("org.wartremover.warts.Null"))
+            def listFiles(f: JFile): Task[Vector[JFile]] = Task delay {
+              f.listFiles match {
+                case null => Vector()
+                case xs   => xs.toVector
               }
             }
 
-            \/.fromTryCatchNonFatal[JPath](Files.walkFileTree(jpath, visitor)).fold(
+            @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
+            def recursiveDeleteSeq(files: Seq[JFile]): Task[Unit] = {
+              files.toList match {
+                case Nil      => Task.now(())
+                case hd :: tl => recursiveDelete(hd).flatMap(_ => recursiveDeleteSeq(tl))
+              }
+            }
+
+            @SuppressWarnings(Array("org.wartremover.warts.Recursion", "org.wartremover.warts.NonUnitStatements"))
+            def recursiveDelete(file: JFile): Task[Unit] = {
+              def del(): Unit = { file.delete(); () }
+
+              if (!file.isDirectory) Task.delay(del())
+              else listFiles(file) flatMap {
+                case Vector() => Task.delay(del())
+                case xs      => recursiveDeleteSeq(xs).flatMap(_ => Task.delay(del()))
+              }
+            }
+
+            \/.fromTryCatchNonFatal[Unit](recursiveDelete(jpath.toFile).unsafePerformSync).fold(
               err => LocalFileSystemError.deleteDirFailed(jpath, err).left,
               κ(().right.right))
 
