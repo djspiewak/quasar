@@ -18,6 +18,7 @@ package quasar.fs
 
 import slamdata.Predef._
 import quasar.{BackendCapability, BackendName, BackendRef, Data, TestConfig}
+import quasar.config.FsPath
 import quasar.contrib.pathy._
 import quasar.contrib.scalaz.eitherT._
 import quasar.fp._
@@ -310,9 +311,10 @@ object FileSystemTest {
 
     val local: java.io.File = java.nio.file.Files.createTempDirectory("localfs").toFile
 
+    // this is literally only going to work if the tempdir is at C:\
     val testDir: ADir =
       if (java.lang.System.getProperty("os.name").contains("Windows"))
-        windowsCodec.parseAbsDir(local.getAbsolutePath + "\\").map(unsafeSandboxAbs)
+        windowsCodec.parseAbsDir(FsPath.winVolAndPath(local.getAbsolutePath)._2 + "\\").map(unsafeSandboxAbs)
           .getOrElse(scala.sys.error("Failed to generate a temp path on windows."))
       else
         posixCodec.parseAbsDir(local.getAbsolutePath + "/").map(unsafeSandboxAbs)
