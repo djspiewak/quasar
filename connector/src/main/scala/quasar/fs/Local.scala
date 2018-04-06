@@ -437,14 +437,25 @@ class Local private (baseDir: JFile) {
           case -\/(_) => // directory
             val visitor = new SimpleFileVisitor[JPath] {
               override def visitFile(file: JPath, attrs: BasicFileAttributes): FileVisitResult = {
-                println(s"visiting file: $file")
+                println(s"visitFile: $file")
                 Files.delete(file)
                 FileVisitResult.CONTINUE
               }
 
               override def postVisitDirectory(dir: JPath, exc: IOException): FileVisitResult = {
-                println(s"visiting post dir: $dir")
+                println(s"postVisitDirectory: $dir")
                 Files.delete(dir)
+                FileVisitResult.CONTINUE
+              }
+
+              override def preVisitDirectory(dir: JPath, attrs: BasicFileAttributes): FileVisitResult = {
+                val contents = Files.list(dir).collect(Collectors.toList())
+                println(s"preVisitDirectory: $dir with contents $contents")
+                FileVisitResult.CONTINUE
+              }
+
+              override def visitFileFailed(file: JPath, exc: IOException): FileVisitResult = {
+                println(s"visitFileFailed: $file")
                 FileVisitResult.CONTINUE
               }
             }
