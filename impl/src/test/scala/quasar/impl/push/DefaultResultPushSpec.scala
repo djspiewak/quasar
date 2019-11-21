@@ -18,10 +18,12 @@ package quasar.impl.push
 
 import slamdata.Predef._
 
-import argonaut.Json
+import argonaut._, Argonaut._
 
 import cats.data.{NonEmptyList, NonEmptyMap, NonEmptySet}
+import cats.Eq
 import cats.effect.IO
+import cats.implicits._
 
 import eu.timepit.refined.auto._
 
@@ -31,21 +33,17 @@ import fs2.{Stream, text}
 
 import org.specs2.matcher.MatchResult
 
+import quasar.{ConditionMatchers, EffectfulQSpec}
 import quasar.api.QueryEvaluator
-import quasar.api.destination.{Destination, DestinationType, ResultSink, ResultType, UntypedDestination}
+import quasar.api.destination.{Destination, DestinationType, Label, Labeled, ResultSink, ResultType, TypeCoercion, UntypedDestination}
+import quasar.api.destination.param.Param
 import quasar.api.push.{PushMeta, RenderConfig, ResultPush, ResultPushError, ResultRender, Status}
 import quasar.api.resource.ResourcePath
 import quasar.api.resource.{ResourcePath, ResourceName}
-import quasar.api.table.{TableColumn, TableName, TableRef}
-import quasar.{ConditionMatchers, EffectfulQSpec}
+import quasar.api.table.{ColumnType, TableColumn, TableName, TableRef}
+import quasar.fp.Dependent
 
-import scalaz.std.anyVal.intInstance
-import scalaz.std.set._
-import scalaz.std.string._
-import scalaz.syntax.bind._
-import scalaz.Equal
-
-import shims.{monadToScalaz, orderToCats}
+import shims.{eqToScalaz, showToScalaz, showToCats}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
@@ -80,6 +78,162 @@ object DefaultResultPushSpec extends EffectfulQSpec[IO] with ConditionMatchers {
       for {
         fs <- SignallingRef[IO, Filesystem](Map.empty)
         destination = new RefDestination(fs)
+      } yield (destination, fs)
+  }
+
+  final class RefTypedDestination(ref: SignallingRef[IO, Filesystem]) extends Destination[IO] {
+    sealed trait Type extends Product with Serializable
+
+    object Type {
+      final case class Varchar(n: Int) extends Type
+      case object Integer extends Type
+    }
+
+    sealed trait Constructor[A] extends ConstructorLike[A] with Product with Serializable
+
+    object Constructor {
+      case object VarcharC extends Constructor[Int] {
+        val param = Param.Integer(Some(0), Some(255), None)
+        def apply(n: Int) = Type.Varchar(n)
+      }
+    }
+
+    implicit val labelType: Label[Type] =
+      Label label {
+        case Type.Varchar(n) => s"Varchar($n)"
+        case Type.Integer => s"Integer"
+      }
+
+    implicit val eqType: Eq[Type] = Eq.fromUniversalEquals[Type]
+
+    implicit val jsonCodecType: CodecJson[Type] =
+      CodecJson[Type](
+        {
+          case Type.Varchar(n) =>
+            Json("varchar" -> n.asJson)
+
+          case Type.Integer =>
+            "integer".asJson
+        },
+        { cursor =>
+          val direct = cursor.as[String] flatMap {
+            case "integer" => DecodeResult.ok[Type](Type.Integer)
+            case t => DecodeResult.fail[Type](s"unknown type tag $t", cursor.history)
+          }
+
+          val varchar = (cursor --\ "varchar").as[Int].map(Type.Varchar(_): Type)
+
+          direct ||| varchar
+        })
+
+    implicit def labelConstructor[P]: Label[Constructor[P]] =
+      Label label {
+        case Constructor.VarcharC => "Varchar"
+      }
+
+    implicit def eqConstructor[P]: Eq[Constructor[P]] =
+      Eq.fromUniversalEquals[Constructor[P]]
+
+    implicit def jsonCodecConstructor[P]: CodecJson[Constructor[P]] =
+      CodecJson[Constructor[P]](
+        {
+          case Constructor.VarcharC => "varchar".asJson
+        },
+        { c =>
+          c.as[String] flatMap {
+            case "varchar" => DecodeResult.ok[Constructor[P]](Constructor.VarcharC: Constructor[P])
+            case tag => DecodeResult.fail[Constructor[P]](s"unknown constructor tag '$tag'", c.history)
+          }
+        })
+
+    DecodeJson[Exists[Constructor]] { c =>
+      c.as[String] flatMap {
+        case "varchar" =>
+          DecodeResult.ok[Exists[Constructor]] {
+            new Exists[Constructor] {
+              val P = Int
+              val c = Constructor.VarcharC
+            }
+          }
+        case tag => DecodeResult.fail[Exists[Constructorjh]](s"unknown constructor tag '$tag'", c.history)
+      }
+    }
+
+    trait Exists[C[_]] {
+      type P
+      val c: C[P]
+
+      def skolemize: C[τ] = c
+    }
+
+    type ∃[C[_]] = Exists[C]
+    val ∃ = Exists
+
+    object Exists {
+      def apply[C[_]]: PartiallyApplied[C] =
+        new PartiallyApplied[C]
+
+      final class PartiallyApplied[C] {
+        def apply[A](ca: C[A]): Exists[C] =
+          new Exists {
+            type P = A
+            val c = ca
+          }
+      }
+    }
+
+    DecodeJson[ConstructorContainer]
+
+    implicit val dependentLabel: Dependent[Constructor, Label] =
+      λ[Dependent[Constructor, Label]] {
+        case Constructor.VarcharC =>
+          Label.label[Int](_ => "Integer")
+      }
+
+    implicit val dependentEq: Dependent[Constructor, Eq] =
+      λ[Dependent[Constructor, Eq]] {
+        case Constructor.VarcharC => Eq[Int]
+      }
+
+    implicit val dependentCodecJson: Dependent[Constructor, CodecJson] =
+      λ[Dependent[Constructor, CodecJson]] {
+        case Constructor.VarcharC =>
+          CodecJson[Int](
+            _.asJson,
+            _.as[Int])
+      }
+
+    final def coerce(tpe: ColumnType): TypeCoercion[Constructor, Type] = tpe match {
+      case ColumnType.Number =>
+        TypeCoercion.Satisfied(NonEmptyList.one(Right(Type.Integer)))
+
+      case ColumnType.String =>
+        TypeCoercion.Satisfied[Constructor, Type](
+          NonEmptyList.one(
+            Labeled(
+              "Varchar",
+              TypeCoercion.Unapplied(Constructor.VarcharC, Constructor.VarcharC.param)).asLeft[Type]))
+
+      case _ =>
+        TypeCoercion.Unsatisfied(Nil, None)
+    }
+
+    def destinationType: DestinationType = RefDestinationType
+    def sinks = NonEmptyList.of(csvSink)
+
+    val csvSink: ResultSink[IO, Type] = ResultSink.csv[IO, Type](RenderConfig.Csv()) {
+      case (dst, columns, bytes) =>
+        bytesToString(bytes).evalMap(str =>
+          ref.update(currentFs =>
+            currentFs + (dst -> currentFs.get(dst).fold(str)(_ ++ str))))
+    }
+  }
+
+  object RefTypedDestination {
+    def apply(): IO[(Destination[IO], SignallingRef[IO, Filesystem])] =
+      for {
+        fs <- SignallingRef[IO, Filesystem](Map.empty)
+        destination = new RefTypedDestination(fs)
       } yield (destination, fs)
   }
 
@@ -146,7 +300,7 @@ object DefaultResultPushSpec extends EffectfulQSpec[IO] with ConditionMatchers {
   val awaitS = Stream.sleep_(WorkTime)
 
   def latchGet(s: SignallingRef[IO, String], expected: String): IO[Unit] =
-    s.discrete.filter(Equal[String].equal(_, expected)).take(1).compile.drain
+    s.discrete.filter(_ === expected).take(1).compile.drain
       .timeoutTo(Timeout * 2, IO.raiseError(new Exception("latchGet timed out")))
 
   def waitForUpdate[K, V](s: SignallingRef[IO, Map[K, V]]): IO[Unit] =

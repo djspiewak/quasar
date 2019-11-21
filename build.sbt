@@ -144,6 +144,7 @@ lazy val api = project
 
     libraryDependencies ++= Seq(
       "com.github.julien-truffaut" %% "monocle-macro"      % monocleVersion,
+      "com.codecommit"             %% "skolems"            % "0.1.1",
       "eu.timepit"                 %% "refined-scalaz"     % refinedVersion,
       "eu.timepit"                 %% "refined-scalacheck" % refinedVersion % Test))
   .settings(commonSettings)

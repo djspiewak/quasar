@@ -26,7 +26,7 @@ import quasar.fp.{τ, Dependent}
 import quasar.api.destination.param.Param
 import quasar.api.table.ColumnType
 
-import scala.{List, Nil, Nothing, Option, Predef, Product, Serializable, StringContext}, Predef._
+import scala.{List, Nil, Nothing, Option, Predef, Product, Some, Serializable, StringContext}, Predef._
 import scala.util.{Either, Left, Right}
 
 sealed trait TypeCoercion[+C[_], +T] extends Product with Serializable
@@ -56,16 +56,19 @@ object TypeCoercion {
     }
 
   // this lives here because it must be uniform with preappliedEncodeJson
+  // here! it's existential
+  // here!
   implicit def appliedDecodeJson[C[_], T: DecodeJson](
-      implicit C: DecodeJson[C[τ]],
+      implicit C: DecodeJson[Exists[C]],
       P: Dependent[C, DecodeJson])
-      : DecodeJson[Either[(C[P], P) forSome { type P }, T]] =
+      : DecodeJson[Either[(C[P], P), T]] =
     DecodeJson { c =>
       for {
-        tpeOrC <- (c --\ "type").as[Either[C[τ], T]]
+        tpeOrC <- (c --\ "type").as[Either[Exists[C], T]]
 
         back <- tpeOrC match {
-          case Left(const) =>
+          case Left(const0) =>
+            val const = const0.skolemize
             (c --\ "params" =\ 0).as(P(const)).map((const, _)).map(Left(_))
 
           case Right(t) =>
@@ -79,7 +82,7 @@ object TypeCoercion {
       PE: Dependent[C, EncodeJson],
       CS: Label[C[τ]],
       PS: Dependent[C, Label])
-      : EncodeJson[Either[Labeled[Unapplied[C, _]], T]] = {
+      : EncodeJson[Either[Labeled[Unapplied[C]], T]] = {
     EncodeJson {
       // we encode constructors as types with params
       case Left(Labeled(plabel, un)) =>
@@ -116,22 +119,35 @@ object TypeCoercion {
         jArray(s.priority.toList.map(_.asJson))
     }
 
-  final case class Unapplied[C[_], P](const: C[P], param: Param[P])
+  trait Unapplied[C[_]] {
+    type P
+    val const: C[P]
+    val param: Param[P]
+  }
 
   object Unapplied {
     import τ.materialize
 
-    implicit def equal[C[_]](implicit C: Eq[C[τ]], P: Dependent[C, Eq]): Eq[Unapplied[C, _]] =
+    type Aux[C[_], P0] = Unapplied[C] { type P = P0 }
+
+    // lowers the type since it's irrelevant
+    def apply[C[_], P0](const0: C[P0], param0: Param[P0]): Unapplied[C] =
+      new Unapplied[C] { type P = P0; val const = const0; val param = param0 }
+
+    def unapply[C[_]](u: Unapplied[C]): Some[(C[u.P], Param[u.P])] =
+      Some((u.const, u.param))
+
+    implicit def equal[C[_]](implicit C: Eq[C[τ]], P: Dependent[C, Eq]): Eq[Unapplied[C]] =
       Eq instance { (_u1, _u2) =>
         // we forcibly normalize the skolems here because we'll be doing a runtime check below to make *sure*
-        val u1 = _u1.asInstanceOf[Unapplied[C, τ]]
-        val u2 = _u2.asInstanceOf[Unapplied[C, τ]]
+        val u1 = _u1.asInstanceOf[Unapplied.Aux[C, τ]]
+        val u2 = _u2.asInstanceOf[Unapplied.Aux[C, τ]]
 
         implicit val eqP = P(u1.const)
         u1.const === u2.const && u1.param === u2.param
       }
 
-    implicit def show[C[_]](implicit C: Show[C[τ]], P: Dependent[C, Show]): Show[Unapplied[C, _]] =
+    implicit def show[C[_]](implicit C: Show[C[τ]], P: Dependent[C, Show]): Show[Unapplied[C]] =
       Show show {
         case Unapplied(c, p) =>
           implicit val showP = P(c)
@@ -145,6 +161,6 @@ object TypeCoercion {
       extends TypeCoercion[Nothing, T]
 
   final case class Satisfied[C[_], T](
-      priority: NonEmptyList[Either[Labeled[Unapplied[C, _]], T]])
+      priority: NonEmptyList[Either[Labeled[Unapplied[C]], T]])
       extends TypeCoercion[C, T]
 }
